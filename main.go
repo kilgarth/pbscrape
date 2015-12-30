@@ -76,7 +76,7 @@ func main() {
 
 	initDB()
 
-	log.Printf("Starting monitoring with an interval of '%d' seconds with a limit of '%d' pastes per request.", monitorInterval, pasteLimit)
+	log.Printf("Starting monitoring with an interval of '%d' minutes with a limit of '%d' pastes per request.", monitorInterval, pasteLimit)
 
 	if runTest == true {
 		test()
@@ -92,8 +92,10 @@ func run(i time.Duration) {
 	for {
 		select {
 		case <-tick:
+			beg := time.Now()
 			getListing()
 			getContents()
+			log.Printf("Completed scrape in %.2f seconds.", time.Since(beg).Seconds())
 		}
 	}
 }
@@ -143,6 +145,7 @@ func initDB() {
 }
 
 func getListing() {
+	log.Println("Getting Listing...")
 	req, err := http.NewRequest("GET", fmt.Sprintf("http://pastebin.com/api_scraping.php?limit=%d", pasteLimit), nil)
 	req.Header.Set("Accept", "application/json")
 	client := &http.Client{}
@@ -174,6 +177,7 @@ func getListing() {
 }
 
 func storeIndex(m Paste) {
+	log.Println("Storing listings...")
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Printf("Database error: %s", err)
@@ -188,6 +192,7 @@ func storeIndex(m Paste) {
 }
 
 func getContents() {
+	log.Println("Getting contents and storing...")
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Printf("Database error: %s", err)
@@ -242,4 +247,5 @@ func getContents() {
 			log.Printf("Error inserting content for %s: %s", k, err)
 		}
 	}
+	log.Println("Done.")
 }
