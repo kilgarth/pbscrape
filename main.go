@@ -103,6 +103,7 @@ func run(i time.Duration) {
 func test() {
 	getListing()
 	getContents()
+
 }
 
 func initDB() {
@@ -171,23 +172,19 @@ func getListing() {
 		return
 	}
 
-	for _, v := range decoded {
-		storeIndex(v)
-	}
-}
-
-func storeIndex(m Paste) {
-	log.Println("Storing listings...")
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		log.Printf("Database error: %s", err)
 	}
-
 	sql := `INSERT INTO pastebin_index (pastebin_key, scrape_url, full_url, date, size, expire, title, syntax, user) VALUES (?,?,?, FROM_UNIXTIME(?), ?,IF(? > 0, FROM_UNIXTIME(?), NULL),?,?,?);`
 	stmt, _ := db.Prepare(sql)
-	_, err = stmt.Exec(m.Key, m.ScrapeURL, m.FullURL, m.Date, m.Size, m.Expire, m.Expire, m.Title, m.Syntax, m.User)
-	if err != nil && !strings.Contains(fmt.Sprintf("%s", err), "Error 1062: Duplicate entry") {
-		log.Printf("Error inserting data into pastebin_index: %s", err)
+	for _, v := range decoded {
+		go func() {
+			_, err = stmt.Exec(v.Key, v.ScrapeURL, v.FullURL, v.Date, v.Size, v.Expire, v.Expire, v.Title, v.Syntax, v.User)
+			if err != nil && !strings.Contains(fmt.Sprintf("%s", err), "Error 1062: Duplicate entry") {
+				log.Printf("Error inserting data into pastebin_index: %s", err)
+			}
+		}()
 	}
 }
 
@@ -220,6 +217,9 @@ func getContents() {
 	}
 	rows.Close()
 
+	inSql := `INSERT INTO pastebin_content (pastebin_key, content, hash) VALUES (?,?,?)`
+	stmt, _ := db.Prepare(inSql)
+
 	for k, _ := range keysToProc {
 		req, err := http.NewRequest("GET", fmt.Sprintf("http://pastebin.com/api_scrape_item.php?i=%s", k), nil)
 		req.Header.Set("Accept", "application/json")
@@ -240,12 +240,12 @@ func getContents() {
 		sum := sha256.Sum256([]byte(b))
 		sumString := fmt.Sprintf("%x", sum[:])
 
-		inSql := `INSERT INTO pastebin_content (pastebin_key, content, hash) VALUES (?,?,?)`
-		stmt, _ := db.Prepare(inSql)
-		_, err = stmt.Exec(k, b, sumString)
-		if err != nil {
-			log.Printf("Error inserting content for %s: %s", k, err)
-		}
+		go func() {
+			_, err = stmt.Exec(k, b, sumString)
+			if err != nil {
+				log.Printf("Error inserting content for %s: %s", k, err)
+			}
+		}()
 	}
 	log.Println("Done.")
 }
