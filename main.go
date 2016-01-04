@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
 	"github.com/robfig/config"
 )
 
@@ -29,14 +28,11 @@ type Paste struct {
 	User      string `json:"user"`
 }
 
-type Pastes struct {
-	Paste []Paste
-}
-
 var conf *config.Config
 var configFile = flag.String("c", "pastebin_scrape.conf", "specify config file")
 var dsn string
 var pasteLimit int
+var stmt = map[string]*sql.Stmt{}
 
 func main() {
 	flag.Parse()
@@ -74,7 +70,8 @@ func main() {
 
 	log.SetOutput(fp)
 
-	initDB()
+	initDB(dsn)
+	initTables()
 
 	log.Printf("Starting monitoring with an interval of '%d' minutes with a limit of '%d' pastes per request.", monitorInterval, pasteLimit)
 
@@ -103,46 +100,20 @@ func run(i time.Duration) {
 func test() {
 	getListing()
 	getContents()
-
 }
 
-func initDB() {
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		log.Printf("Database error: %s", err)
-	}
+func initTables() {
 
-	sql := `CREATE TABLE IF NOT EXISTS pastebin_index
-    (
-		pastebin_key VARCHAR(50) NOT NULL PRIMARY KEY,
-		scrape_url varchar(255),
-        full_url varchar(255),
-		date DATETIME,
-		size BIGINT,
-        expire DATETIME,
-        title varchar(255),
-        syntax varchar(255),
-        user varchar(255),
-		enterdate TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-	);`
-
-	_, err = db.Exec(sql)
+	_, err := stmt["createPastebinIndex"].Exec()
 	if err != nil {
 		log.Printf("Error creating pastebin_index table: %s", err)
 	}
 
-	sql = `CREATE TABLE IF NOT EXISTS pastebin_content
-    (
-        pastebin_key varchar(50) NOT NULL PRIMARY KEY,
-        content TEXT,
-        hash varchar(255),
-        enterdate TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );`
-
-	_, err = db.Exec(sql)
+	_, err = stmt["createPastebinContent"].Exec()
 	if err != nil {
 		log.Printf("Error creating pastebin_content table: %s", err)
 	}
+
 }
 
 func getListing() {
@@ -172,36 +143,18 @@ func getListing() {
 		return
 	}
 
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		log.Printf("Database error: %s", err)
-	}
-	sql := `INSERT INTO pastebin_index (pastebin_key, scrape_url, full_url, date, size, expire, title, syntax, user) VALUES (?,?,?, FROM_UNIXTIME(?), ?,IF(? > 0, FROM_UNIXTIME(?), NULL),?,?,?);`
-	stmt, _ := db.Prepare(sql)
 	for _, v := range decoded {
-		go func() {
-			_, err = stmt.Exec(v.Key, v.ScrapeURL, v.FullURL, v.Date, v.Size, v.Expire, v.Expire, v.Title, v.Syntax, v.User)
-			if err != nil && !strings.Contains(fmt.Sprintf("%s", err), "Error 1062: Duplicate entry") {
-				log.Printf("Error inserting data into pastebin_index: %s", err)
-			}
-		}()
+		_, err = stmt["insertIndex"].Exec(v.Key, v.ScrapeURL, v.FullURL, v.Date, v.Size, v.Expire, v.Expire, v.Title, v.Syntax, v.User)
+		if err != nil && !strings.Contains(fmt.Sprintf("%s", err), "Error 1062: Duplicate entry") {
+			log.Printf("Error inserting data into pastebin_index: %s", err)
+		}
 	}
 }
 
 func getContents() {
 	log.Println("Getting contents and storing...")
-	db, err := sql.Open("mysql", dsn)
-	if err != nil {
-		log.Printf("Database error: %s", err)
-	}
 
-	sql := `SELECT pastebin_index.pastebin_key
-    FROM pastebin_index
-    LEFT JOIN pastebin_content ON pastebin_content.pastebin_key = pastebin_index.pastebin_key
-    WHERE pastebin_content.pastebin_key IS NULL
-    AND IFNULL(pastebin_index.expire,NOW()) >= NOW();`
-
-	rows, err := db.Query(sql)
+	rows, err := stmt["getKeys"].Query()
 
 	if err != nil {
 		log.Printf("Query error: %s", err)
@@ -217,10 +170,8 @@ func getContents() {
 	}
 	rows.Close()
 
-	inSql := `INSERT INTO pastebin_content (pastebin_key, content, hash) VALUES (?,?,?)`
-	stmt, _ := db.Prepare(inSql)
-
 	for k, _ := range keysToProc {
+		time.Sleep(1) //This is to satisfy pastebin so they dont get mad.
 		req, err := http.NewRequest("GET", fmt.Sprintf("http://pastebin.com/api_scrape_item.php?i=%s", k), nil)
 		req.Header.Set("Accept", "application/json")
 		client := &http.Client{}
@@ -240,12 +191,11 @@ func getContents() {
 		sum := sha256.Sum256([]byte(b))
 		sumString := fmt.Sprintf("%x", sum[:])
 
-		go func() {
-			_, err = stmt.Exec(k, b, sumString)
-			if err != nil {
-				log.Printf("Error inserting content for %s: %s", k, err)
-			}
-		}()
+		_, err = stmt["insertContent"].Exec(k, b, sumString)
+		if err != nil {
+			log.Printf("Error inserting content for %s: %s", k, err)
+		}
 	}
+
 	log.Println("Done.")
 }
